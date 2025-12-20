@@ -16,7 +16,7 @@ use {
         collections::{HashMap, HashSet},
         convert::TryFrom,
         sync::Arc,
-        time::Duration,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     },
     tokio::{
         sync::{mpsc::Sender, RwLock},
@@ -262,78 +262,91 @@ impl Datasource for LaserStreamGeyserClient {
                                     }
 
                                     match message {
-                                        Ok(msg) => match msg.update_oneof {
-                                            Some(UpdateOneof::Account(account_update)) => {
-                                                send_subscribe_account_update_info(
-                                                    account_update.account,
-                                                    &metrics,
-                                                    &sender,
-                                                    id_for_loop.clone(),
-                                                    account_update.slot,
-                                                    &account_deletions_tracked,
-                                                )
-                                                .await
-                                            }
-                                            Some(UpdateOneof::Transaction(transaction_update)) => {
-                                                send_subscribe_update_transaction_info(
-                                                    transaction_update.transaction,
-                                                    &metrics,
-                                                    &sender,
-                                                    id_for_loop.clone(),
-                                                    transaction_update.slot,
-                                                    None,
-                                                ).await
-                                            }
-                                            Some(UpdateOneof::Block(block_update)) => {
-                                                let block_time = block_update.block_time.map(|ts| ts.timestamp);
-
-                                                for transaction_update in block_update.transactions {
-                                                    if retain_block_failed_transactions || transaction_update.meta.as_ref().map(|meta| meta.err.is_none()).unwrap_or(false) {
-                                                        send_subscribe_update_transaction_info(Some(transaction_update), &metrics, &sender, id_for_loop.clone(), block_update.slot, block_time).await
-                                                    }
+                                        Ok(msg) => {
+                                            let created_at_opt = msg.created_at.clone();
+                                            let recv_time = SystemTime::now();
+                                            if let Some(created_at) = created_at_opt {
+                                                let created_time = SystemTime::UNIX_EPOCH + Duration::new(created_at.seconds as u64, created_at.nanos as u32);
+                                                if let Ok(latency) = recv_time.duration_since(created_time) {
+                                                    let latency_ms = latency.as_nanos();
+                                                    metrics.record_histogram("laserstream_recv_time_time_nanoseconds",latency_ms as f64,).await.expect("Failed to record histogram");
                                                 }
 
-                                                for account_info in block_update.accounts {
+                                            }
+                                            match msg.update_oneof {
+                                                Some(UpdateOneof::Account(account_update)) => {
                                                     send_subscribe_account_update_info(
-                                                        Some(account_info),
+                                                        account_update.account,
                                                         &metrics,
                                                         &sender,
                                                         id_for_loop.clone(),
-                                                        block_update.slot,
+                                                        account_update.slot,
                                                         &account_deletions_tracked,
                                                     )
-                                                    .await;
+                                                    .await
                                                 }
-                                            }
-                                            Some(UpdateOneof::Slot(slot_update)) => {
-                                                if replay_enabled {
-                                                    tracked_slot = slot_update.slot;
+                                                Some(UpdateOneof::Transaction(transaction_update)) => {
+                                                    send_subscribe_update_transaction_info(
+                                                        transaction_update.transaction,
+                                                        &metrics,
+                                                        &sender,
+                                                        id_for_loop.clone(),
+                                                        transaction_update.slot,
+                                                        None,
+                                                    ).await
                                                 }
+                                                Some(UpdateOneof::Block(block_update)) => {
+                                                    let block_time = block_update.block_time.map(|ts| ts.timestamp);
 
-                                                // Skip if this slot update is EXCLUSIVELY from our internal subscription
-                                                if let Some(ref internal_id) = internal_slot_sub_id {
-                                                    if msg.filters.len() == 1 && msg.filters.contains(internal_id) {
-                                                        continue;
+                                                    for transaction_update in block_update.transactions {
+                                                        if retain_block_failed_transactions || transaction_update.meta.as_ref().map(|meta| meta.err.is_none()).unwrap_or(false) {
+                                                            send_subscribe_update_transaction_info(Some(transaction_update), &metrics, &sender, id_for_loop.clone(), block_update.slot, block_time).await
+                                                        }
+                                                    }
+
+                                                    for account_info in block_update.accounts {
+                                                        send_subscribe_account_update_info(
+                                                            Some(account_info),
+                                                            &metrics,
+                                                            &sender,
+                                                            id_for_loop.clone(),
+                                                            block_update.slot,
+                                                            &account_deletions_tracked,
+                                                        )
+                                                        .await;
                                                     }
                                                 }
-                                            }
-                                            Some(UpdateOneof::Ping(_)) => {
-                                                match subscribe_tx
-                                                    .send(SubscribeRequest {
-                                                        ping: Some(SubscribeRequestPing { id: 1 }),
-                                                        ..Default::default()
-                                                    })
-                                                    .await {
-                                                        Ok(()) => (),
-                                                        Err(error) => {
-                                                            log::error!("Failed to send ping error: {error:?}");
-                                                            break;
-                                                        },
+                                                Some(UpdateOneof::Slot(slot_update)) => {
+                                                    if replay_enabled {
+                                                        tracked_slot = slot_update.slot;
                                                     }
-                                            }
 
-                                            _ => {}
-                                        },
+                                                    // Skip if this slot update is EXCLUSIVELY from our internal subscription
+                                                    if let Some(ref internal_id) = internal_slot_sub_id {
+                                                        if msg.filters.len() == 1 && msg.filters.contains(internal_id) {
+                                                            continue;
+                                                        }
+                                                    }
+                                                }
+                                                Some(UpdateOneof::Ping(_)) => {
+                                                    match subscribe_tx
+                                                        .send(SubscribeRequest {
+                                                            ping: Some(SubscribeRequestPing { id: 1 }),
+                                                            ..Default::default()
+                                                        })
+                                                        .await {
+                                                            Ok(()) => (),
+                                                            Err(error) => {
+                                                                log::error!("Failed to send ping error: {error:?}");
+                                                                break;
+                                                            },
+                                                        }
+                                                }
+
+                                                _ => {}
+                                            }
+                                        }
+
                                         Err(error) => {
                                             log::error!("Geyser stream error, will reconnect: {error:?}");
                                             break;
