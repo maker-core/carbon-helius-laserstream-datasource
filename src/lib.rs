@@ -263,16 +263,7 @@ impl Datasource for LaserStreamGeyserClient {
 
                                     match message {
                                         Ok(msg) => {
-                                            let created_at_opt = msg.created_at.clone();
                                             let recv_time = SystemTime::now();
-                                            if let Some(created_at) = created_at_opt {
-                                                let created_time = SystemTime::UNIX_EPOCH + Duration::new(created_at.seconds as u64, created_at.nanos as u32);
-                                                if let Ok(latency) = recv_time.duration_since(created_time) {
-                                                    let latency_ms = latency.as_nanos();
-                                                    metrics.record_histogram("laserstream_recv_time_time_nanoseconds",latency_ms as f64,).await.expect("Failed to record histogram");
-                                                }
-
-                                            }
                                             match msg.update_oneof {
                                                 Some(UpdateOneof::Account(account_update)) => {
                                                     send_subscribe_account_update_info(
@@ -344,6 +335,14 @@ impl Datasource for LaserStreamGeyserClient {
                                                 }
 
                                                 _ => {}
+                                            }
+                                            let created_at_opt = msg.created_at.clone();
+                                            if let Some(created_at) = created_at_opt {
+                                                let created_time = SystemTime::UNIX_EPOCH + Duration::new(created_at.seconds as u64, created_at.nanos as u32);
+                                                if let Ok(latency) = recv_time.duration_since(created_time) {
+                                                    let latency_ms = latency.as_nanos();
+                                                    metrics.record_histogram("laserstream_recv_time_time_nanoseconds",latency_ms as f64,).await.expect("Failed to record histogram");
+                                                }
                                             }
                                         }
 
