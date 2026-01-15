@@ -237,7 +237,7 @@ impl Datasource for LaserStreamGeyserClient {
             };
 
             let id_for_loop = id.clone();
-
+            SUBSCRIBE_REQUEST_POOL_ACCOUNT.store(Arc::new(subscribe_request.clone()));
             loop {
                 if UPDATE_LOAD_2.swap(false, Ordering::Relaxed) {
                     // 如果标志为 true，重置为 false 并继续（会重新订阅）
@@ -261,7 +261,7 @@ impl Datasource for LaserStreamGeyserClient {
                         //     subscribe_request.from_slot = None;
                         // }
 
-                        SUBSCRIBE_REQUEST_POOL_ACCOUNT.store(Arc::new(subscribe_request.clone()));
+
 
                         match geyser_client.subscribe_with_request(Some(SUBSCRIBE_REQUEST_POOL_ACCOUNT.load().as_ref().clone())).await {
                             Ok((mut subscribe_tx, mut stream)) => {
