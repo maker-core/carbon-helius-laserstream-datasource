@@ -1,4 +1,5 @@
 use {
+    arc_swap::ArcSwap,
     async_trait::async_trait,
     carbon_core::{
         datasource::{
@@ -9,13 +10,17 @@ use {
         metrics::MetricsCollection,
     },
     futures::{sink::SinkExt, StreamExt},
+    once_cell::sync::Lazy,
     solana_account::Account,
     solana_pubkey::Pubkey,
     solana_signature::Signature,
     std::{
         collections::{HashMap, HashSet},
         convert::TryFrom,
-        sync::Arc,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
         time::{Duration, SystemTime, UNIX_EPOCH},
     },
     tokio::{
@@ -39,6 +44,9 @@ use {
 
 const MAX_RECONNECTION_ATTEMPTS: u32 = 10;
 const RECONNECTION_DELAY_MS: u64 = 3000;
+pub static UPDATE_LOAD_2: AtomicBool = AtomicBool::new(false);
+pub static SUBSCRIBE_REQUEST_POOL_ACCOUNT: Lazy<ArcSwap<SubscribeRequest>> =
+    Lazy::new(|| ArcSwap::from_pointee(SubscribeRequest::default()));
 
 #[derive(Debug)]
 pub struct LaserStreamGeyserClient {
@@ -231,6 +239,9 @@ impl Datasource for LaserStreamGeyserClient {
             let id_for_loop = id.clone();
 
             loop {
+                if UPDATE_LOAD_2.swap(false, Ordering::Relaxed) {
+                    // 如果标志为 true，重置为 false 并继续（会重新订阅）
+                }
                 tokio::select! {
                     _ = cancellation_token.cancelled() => {
                         log::info!("Cancelling Laserstream subscription.");
@@ -238,25 +249,28 @@ impl Datasource for LaserStreamGeyserClient {
                     }
                     _ = async {
                         // Apply slot replay logic if enabled
-                        if reconnect_attempts > 0 && tracked_slot > 0 && replay_enabled {
-                            let commitment_level = subscribe_request.commitment.unwrap_or(0);
-                            let from_slot = match commitment_level {
-                                0 => tracked_slot.saturating_sub(31), // PROCESSED: rewind by 31 slots
-                                1 | 2 => tracked_slot,                 // CONFIRMED/FINALIZED: exact slot
-                                _ => tracked_slot.saturating_sub(31),  // Unknown: default to safe behavior
-                            };
-                            subscribe_request.from_slot = Some(from_slot);
-                        } else if !replay_enabled {
-                            subscribe_request.from_slot = None;
-                        }
+                        // if reconnect_attempts > 0 && tracked_slot > 0 && replay_enabled {
+                        //     let commitment_level = subscribe_request.commitment.unwrap_or(0);
+                        //     let from_slot = match commitment_level {
+                        //         0 => tracked_slot.saturating_sub(31), // PROCESSED: rewind by 31 slots
+                        //         1 | 2 => tracked_slot,                 // CONFIRMED/FINALIZED: exact slot
+                        //         _ => tracked_slot.saturating_sub(31),  // Unknown: default to safe behavior
+                        //     };
+                        //     subscribe_request.from_slot = Some(from_slot);
+                        // } else if !replay_enabled {
+                        //     subscribe_request.from_slot = None;
+                        // }
 
+                        SUBSCRIBE_REQUEST_POOL_ACCOUNT.store(Arc::new(subscribe_request.clone()));
 
-
-                        match geyser_client.subscribe_with_request(Some(subscribe_request.clone())).await {
+                        match geyser_client.subscribe_with_request(Some(SUBSCRIBE_REQUEST_POOL_ACCOUNT.load().as_ref().clone())).await {
                             Ok((mut subscribe_tx, mut stream)) => {
                                 reconnect_attempts = 0; // Reset on successful connection
 
                                 while let Some(message) = stream.next().await {
+                                    if UPDATE_LOAD_2.load(Ordering::Relaxed) {
+                                        break;
+                                    }
                                     if cancellation_token.is_cancelled() {
                                         return Ok(());
                                     }
@@ -538,4 +552,16 @@ async fn send_subscribe_update_transaction_info(
             slot
         );
     }
+}
+
+pub fn update_pool_account_subscribe_request(label: &str, value: String) -> CarbonResult<()> {
+    let mut subscribe_request = SUBSCRIBE_REQUEST_POOL_ACCOUNT.load().as_ref().clone();
+    let length = {
+        let account = subscribe_request.accounts.get_mut(label).unwrap();
+        account.account.push(value);
+        account.account.len()
+    };
+    SUBSCRIBE_REQUEST_POOL_ACCOUNT.store(Arc::new(subscribe_request));
+    UPDATE_LOAD_2.store(true, Ordering::Relaxed);
+    Ok(())
 }

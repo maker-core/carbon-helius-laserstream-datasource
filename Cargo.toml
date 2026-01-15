@@ -93,3 +93,10 @@ version = "9.0.0"
 [dependencies.yellowstone-grpc-proto]
 version = "9.0.0"
 features = ["convert"]
+
+[dependencies.arc-swap]
+version = "1.7.1"
+
+[dependencies.once_cell]
+version = "1.21.3"
+
