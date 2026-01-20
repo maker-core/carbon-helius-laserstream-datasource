@@ -21,7 +21,7 @@ use {
             atomic::{AtomicBool, Ordering},
             Arc,
         },
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime},
     },
     tokio::{
         sync::{mpsc::Sender, RwLock},
@@ -556,12 +556,21 @@ async fn send_subscribe_update_transaction_info(
 
 pub fn update_pool_account_subscribe_request(label: &str, value: String) -> CarbonResult<()> {
     let mut subscribe_request = SUBSCRIBE_REQUEST_POOL_ACCOUNT.load().as_ref().clone();
-    let length = {
+    {
         let account = subscribe_request.accounts.get_mut(label).unwrap();
         account.account.push(value);
-        account.account.len()
     };
     SUBSCRIBE_REQUEST_POOL_ACCOUNT.store(Arc::new(subscribe_request));
     UPDATE_LOAD_2.store(true, Ordering::Relaxed);
     Ok(())
+}
+
+pub fn get_pool_account_subscribe_request(label: &str) -> Vec<String> {
+    let subscribe_request = SUBSCRIBE_REQUEST_POOL_ACCOUNT.load().as_ref().clone();
+    subscribe_request
+        .accounts
+        .get(label)
+        .unwrap()
+        .account
+        .clone()
 }
