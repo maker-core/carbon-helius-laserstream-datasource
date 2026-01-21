@@ -554,11 +554,11 @@ async fn send_subscribe_update_transaction_info(
     }
 }
 
-pub fn update_pool_account_subscribe_request(label: &str, value: String) -> CarbonResult<()> {
+pub fn update_pool_account_subscribe_request(label: &str, value: Vec<String>) -> CarbonResult<()> {
     let mut subscribe_request = SUBSCRIBE_REQUEST_POOL_ACCOUNT.load().as_ref().clone();
     {
         let account = subscribe_request.accounts.get_mut(label).unwrap();
-        account.account.push(value);
+        account.account.extend(value);
     };
     SUBSCRIBE_REQUEST_POOL_ACCOUNT.store(Arc::new(subscribe_request));
     UPDATE_LOAD_2.store(true, Ordering::Relaxed);
